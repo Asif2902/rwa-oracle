@@ -1,0 +1,13 @@
+{
+  "name": "rwa-oracle",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node oracle.js"
+  },
+  "dependencies": {
+    "node-fetch": "^3.3.2",
+    "ethers": "^6.0.0",
+    "dotenv": "^16.0.0"
+  }
+}
