@@ -2,4 +2,5 @@
 !oracle.js
 !.gitignore
 !.env.example
+.env
 !package.json
