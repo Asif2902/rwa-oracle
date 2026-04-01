@@ -3,6 +3,7 @@
 !monitor.js
 !backup.js
 !ecosystem.config.cjs
+!SECURITY.md
 !.gitignore
 !.env.example
 .env
