@@ -1,7 +1,34 @@
+import http from 'http';
 import fetch from 'node-fetch';
 import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 dotenv.config();
+
+// ─── Health check server (required for Railway) ─────────────────────────────
+const PORT = process.env.PORT || 3000;
+let lastCheck = null;
+let lastCorrection = null;
+let isHealthy = true;
+
+const server = http.createServer((req, res) => {
+    if (req.url === '/health' || req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+            status: isHealthy ? 'ok' : 'degraded',
+            service: 'monitor',
+            lastCheck,
+            lastCorrection,
+            uptime: process.uptime()
+        }));
+    } else {
+        res.writeHead(404);
+        res.end('Not found');
+    }
+});
+
+server.listen(PORT, () => {
+    console.log(`[HTTP] Health server on port ${PORT}`);
+});
 
 // ─── RPC Fallback ───────────────────────────────────────────────────────────
 const RPC_URLS = [
@@ -47,6 +74,7 @@ function getProvider() {
 }
 function rotateRpc() {
     currentRpcIndex++;
+    console.log(`[RPC] Switched to: ${RPC_URLS[currentRpcIndex % RPC_URLS.length]}`);
     return getProvider();
 }
 
@@ -64,10 +92,13 @@ async function fetchApiPrice(symbol) {
     const sources = PRICE_SOURCES[symbol];
     for (const source of sources) {
         try {
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), 10000);
             const res = await fetch(source.url, {
                 headers: { 'User-Agent': 'Mozilla/5.0' },
-                signal: AbortSignal.timeout(10000)
+                signal: controller.signal
             });
+            clearTimeout(timeout);
             let price;
             if (source.type === "yahoo") {
                 const data = await res.json();
@@ -88,8 +119,9 @@ async function submitCorrection(pairIds, prices, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
             const tx = await registry.submitPriceBatch(pairIds, prices);
-            console.log(`TX: ${tx.hash}`);
+            console.log(`[Monitor] TX: ${tx.hash}`);
             await tx.wait();
+            lastCorrection = tx.hash;
             return true;
         } catch (err) {
             console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
@@ -105,47 +137,67 @@ async function submitCorrection(pairIds, prices, retries = 3) {
 }
 
 async function monitor() {
-    console.log(`[${new Date().toISOString()}] Checking...`);
-    const mismatches = [];
+    try {
+        console.log(`[${new Date().toISOString()}] Checking...`);
+        const mismatches = [];
 
-    for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
-        try {
-            const pair = await registry.getPair(pairId);
-            const onChainPrice = pair.price;
-            const lastUpdated = Number(pair.lastUpdated);
+        for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
+            try {
+                const pair = await registry.getPair(pairId);
+                const onChainPrice = pair.price;
+                const lastUpdated = Number(pair.lastUpdated);
 
-            if (onChainPrice === 0n) continue;
+                if (onChainPrice === 0n) {
+                    console.log(`  ${symbol}: No price yet`);
+                    continue;
+                }
 
-            const apiPrice = await fetchApiPrice(symbol);
-            if (!apiPrice) continue;
+                const apiPrice = await fetchApiPrice(symbol);
+                if (!apiPrice) continue;
 
-            const diff = onChainPrice > apiPrice ? onChainPrice - apiPrice : apiPrice - onChainPrice;
-            const deviationBps = Number((diff * 10000n) / onChainPrice);
-            const age = Math.floor(Date.now() / 1000) - lastUpdated;
+                const diff = onChainPrice > apiPrice ? onChainPrice - apiPrice : apiPrice - onChainPrice;
+                const deviationBps = Number((diff * 10000n) / onChainPrice);
+                const age = Math.floor(Date.now() / 1000) - lastUpdated;
 
-            console.log(`  ${symbol}: on-chain=${ethers.formatUnits(onChainPrice, 18)} api=${ethers.formatUnits(apiPrice, 18)} dev=${(deviationBps / 100).toFixed(2)}% age=${age}s`);
+                console.log(`  ${symbol}: on-chain=${ethers.formatUnits(onChainPrice, 18)} api=${ethers.formatUnits(apiPrice, 18)} dev=${(deviationBps / 100).toFixed(2)}% age=${age}s`);
 
-            if (deviationBps >= DEVIATION_THRESHOLD) {
-                console.log(`  ⚠️ ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(2)}%`);
-                mismatches.push({ pairId, symbol, apiPrice });
+                if (deviationBps >= DEVIATION_THRESHOLD) {
+                    console.log(`  [!] ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(2)}%`);
+                    mismatches.push({ pairId, symbol, apiPrice });
+                }
+                if (age > 300) {
+                    console.log(`  [!] ${symbol} STALE: ${age}s`);
+                    mismatches.push({ pairId, symbol, apiPrice });
+                }
+            } catch (err) {
+                console.error(`  ${symbol} error: ${err.message}`);
             }
-            if (age > 300) {
-                console.log(`  ⚠️ ${symbol} STALE: ${age}s`);
-                mismatches.push({ pairId, symbol, apiPrice });
-            }
-        } catch (err) {
-            console.error(`  ${symbol} error:`, err.message);
         }
-    }
 
-    if (mismatches.length > 0) {
-        const pairIds = mismatches.map(m => m.pairId);
-        const prices = mismatches.map(m => m.apiPrice);
-        console.log(`[${new Date().toISOString()}] Submitting ${mismatches.length} corrections...`);
-        await submitCorrection(pairIds, prices);
+        if (mismatches.length > 0) {
+            const pairIds = mismatches.map(m => m.pairId);
+            const prices = mismatches.map(m => m.apiPrice);
+            console.log(`[Monitor] Submitting ${mismatches.length} corrections...`);
+            await submitCorrection(pairIds, prices);
+        }
+
+        lastCheck = new Date().toISOString();
+        isHealthy = true;
+    } catch (err) {
+        console.error(`[Monitor] Error: ${err.message}`);
+        isHealthy = false;
     }
 }
 
+// ─── Keep alive loop (prevents Railway from sleeping) ───────────────────────
+function keepAlive() {
+    setInterval(() => {
+        fetch(`http://localhost:${PORT}/health`).catch(() => {});
+    }, 25000);
+}
+
+// ─── Start ──────────────────────────────────────────────────────────────────
 setInterval(monitor, 30_000);
 monitor();
-console.log(`AchRWAOracle monitor running | Wallet: ${wallet.address}`);
+keepAlive();
+console.log(`[Monitor] Running | Wallet: ${wallet.address}`);
