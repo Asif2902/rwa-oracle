@@ -26,7 +26,12 @@ const ENDPOINTS = {
 const provider = new ethers.JsonRpcProvider(RPC_URL);
 const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
-    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external"
+    "function submitPrice(uint256 pairId, uint256 price) external",
+    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
+    "function isSubmitter(address) view returns (bool)",
+    "function pairCount() view returns (uint256)",
+    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))",
+    "function getProtocolStats() view returns (uint256, uint256, uint256, uint256, address, address, bool)"
 ];
 const registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
@@ -60,16 +65,19 @@ async function updatePrices() {
     if (pairIds.length > 0) {
         try {
             const tx = await registry.submitPriceBatch(pairIds, prices);
-            console.log(`Submitted prices at ${new Date().toISOString()}:`, pairIds.map((id,i) => `${id}=${ethers.formatUnits(prices[i],18)}`));
-            await tx.wait();
+            console.log(`[${new Date().toISOString()}] TX: ${tx.hash}`);
+            const receipt = await tx.wait();
+            console.log(`Confirmed in block ${receipt.blockNumber}`);
+            pairIds.forEach((id, i) => {
+                console.log(`  ${Object.keys(PAIR_IDS).find(k => PAIR_IDS[k] === id)}: ${ethers.formatUnits(prices[i], 18)}`);
+            });
         } catch (err) {
-            console.error("Error submitting prices:", err.message);
+            console.error(`[${new Date().toISOString()}] Error:`, err.message);
         }
     }
 }
 
 setInterval(updatePrices, 60_000);
-
 updatePrices();
 
-console.log('Oracle service running...');
+console.log('AchRWAOracle price feeder running...');

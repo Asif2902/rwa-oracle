@@ -1,5 +1,6 @@
 *
 !oracle.js
+!monitor.js
 !.gitignore
 !.env.example
 .env
