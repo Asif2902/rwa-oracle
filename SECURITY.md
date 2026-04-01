@@ -11,7 +11,7 @@ The AchRWA price oracle system is designed with **zero single points of failure*
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   ORACLE    │     │   MONITOR   │     │   BACKUP    │
-│   (VPS 1)   │     │   (VPS 2)   │     │   (VPS 3)   │
+│   (VPS 1)   │     │   (VPS 2)   │     │   (Railway)   │
 │             │     │             │     │             │
 │ Submits     │     │ Detects     │     │ Takes over  │
 │ prices      │     │ deviations  │     │ if primary  │
@@ -89,7 +89,7 @@ if age > 300 seconds → submit correction
 | Property | Value |
 |----------|-------|
 | **File** | `backup.js` |
-| **Host** | VPS 3 |
+| **Host** | Railway |
 | **Wallet** | `0x6e0df2d65d309b55B217B5237657302386E75584` |
 | **Role** | Failover price submitter |
 | **Interval** | Every 30 seconds |
