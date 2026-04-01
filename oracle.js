@@ -16,27 +16,29 @@ const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
 const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
 
-// ─── Primary + Backup Price Sources ─────────────────────────────────────────
+// ─── Price Sources (primary + backups) ──────────────────────────────────────
 const PRICE_SOURCES = {
     AAPL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/AAPL" },
         { type: "stockprices", url: "https://stockprices.dev/api/stocks/AAPL" }
     ],
     GOOGL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GOOGL" },
         { type: "stockprices", url: "https://stockprices.dev/api/stocks/GOOGL" }
     ],
     WTI: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F" },
-        { type: "stockprices", url: "https://stockprices.dev/api/stocks/CL" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/CL=F" }
     ],
     GOLD: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GC=F" },
-        { type: "stockprices", url: "https://stockprices.dev/api/stocks/GC" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GC=F" }
     ],
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
-        { type: "stockprices", url: "https://stockprices.dev/api/stocks/SI" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
     ]
 };
 
