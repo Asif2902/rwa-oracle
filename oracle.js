@@ -3,58 +3,121 @@ import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const RPC_URL = process.env.RPC_URL;
+// ─── RPC Fallback List (official Arc docs) ─────────────────────────────────
+const RPC_URLS = [
+    process.env.RPC_URL,
+    "https://rpc.blockdaemon.testnet.arc.network",
+    "https://rpc.drpc.testnet.arc.network",
+    "https://rpc.quicknode.testnet.arc.network"
+].filter(Boolean);
+
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
-const PAIR_IDS = {
-    AAPL: 1,
-    GOOGL: 2,
-    WTI: 3,
-    GOLD: 4,
-    SILVER: 5
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+
+// ─── Primary + Backup Price Sources ─────────────────────────────────────────
+const PRICE_SOURCES = {
+    AAPL: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/AAPL" }
+    ],
+    GOOGL: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/GOOGL" }
+    ],
+    WTI: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/CL" }
+    ],
+    GOLD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GC=F" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/GC" }
+    ],
+    SILVER: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/SI" }
+    ]
 };
 
-const ENDPOINTS = {
-    AAPL: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
-    GOOGL: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL",
-    WTI: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F",
-    GOLD: "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
-    SILVER: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F"
-};
+// ─── Provider with fallback ─────────────────────────────────────────────────
+let currentRpcIndex = 0;
 
-const provider = new ethers.JsonRpcProvider(RPC_URL);
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
-const registryAbi = [
-    "function submitPrice(uint256 pairId, uint256 price) external",
-    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
-    "function isSubmitter(address) view returns (bool)",
-    "function pairCount() view returns (uint256)",
-    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))",
-    "function getProtocolStats() view returns (uint256, uint256, uint256, uint256, address, address, bool)"
-];
-const registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
-
-async function fetchPrice(symbol) {
-    try {
-        const res = await fetch(ENDPOINTS[symbol], {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const data = await res.json();
-        const price = data.chart.result[0].meta.regularMarketPrice;
-        if (!price) throw new Error(`No price for ${symbol}`);
-        return ethers.parseUnits(price.toString(), 18);
-    } catch (err) {
-        console.error(`Error fetching ${symbol}:`, err.message);
-        return null;
-    }
+function getProvider() {
+    const url = RPC_URLS[currentRpcIndex % RPC_URLS.length];
+    return new ethers.JsonRpcProvider(url);
 }
 
+function rotateRpc() {
+    currentRpcIndex++;
+    console.log(`[RPC] Switched to: ${RPC_URLS[currentRpcIndex % RPC_URLS.length]}`);
+    return getProvider();
+}
+
+let provider = getProvider();
+let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+const registryAbi = [
+    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
+    "function isSubmitter(address) view returns (bool)"
+];
+let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
+
+// ─── Price Fetch with fallback sources ──────────────────────────────────────
+async function fetchPrice(symbol) {
+    const sources = PRICE_SOURCES[symbol];
+    for (const source of sources) {
+        try {
+            const res = await fetch(source.url, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                signal: AbortSignal.timeout(10000)
+            });
+            let price;
+            if (source.type === "yahoo") {
+                const data = await res.json();
+                price = data.chart?.result?.[0]?.meta?.regularMarketPrice;
+            } else if (source.type === "stockprices") {
+                const data = await res.json();
+                price = data.Price;
+            }
+            if (price) {
+                return ethers.parseUnits(price.toString(), 18);
+            }
+        } catch (err) {
+            console.error(`[Price] ${source.type} failed for ${symbol}: ${err.message}`);
+        }
+    }
+    console.error(`[Price] ALL sources failed for ${symbol}`);
+    return null;
+}
+
+// ─── Transaction with retry + RPC rotation ──────────────────────────────────
+async function submitBatch(pairIds, prices, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const tx = await registry.submitPriceBatch(pairIds, prices);
+            console.log(`[${new Date().toISOString()}] TX: ${tx.hash}`);
+            const receipt = await tx.wait();
+            console.log(`Confirmed in block ${receipt.blockNumber}`);
+            return true;
+        } catch (err) {
+            console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
+            if (i < retries - 1) {
+                provider = rotateRpc();
+                wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+                registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+        }
+    }
+    return false;
+}
+
+// ─── Main update loop ───────────────────────────────────────────────────────
 async function updatePrices() {
     const pairIds = [];
     const prices = [];
 
-    for (let symbol of Object.keys(PAIR_IDS)) {
+    for (const symbol of Object.keys(PAIR_IDS)) {
         const price = await fetchPrice(symbol);
         if (price) {
             pairIds.push(PAIR_IDS[symbol]);
@@ -63,21 +126,11 @@ async function updatePrices() {
     }
 
     if (pairIds.length > 0) {
-        try {
-            const tx = await registry.submitPriceBatch(pairIds, prices);
-            console.log(`[${new Date().toISOString()}] TX: ${tx.hash}`);
-            const receipt = await tx.wait();
-            console.log(`Confirmed in block ${receipt.blockNumber}`);
-            pairIds.forEach((id, i) => {
-                console.log(`  ${Object.keys(PAIR_IDS).find(k => PAIR_IDS[k] === id)}: ${ethers.formatUnits(prices[i], 18)}`);
-            });
-        } catch (err) {
-            console.error(`[${new Date().toISOString()}] Error:`, err.message);
-        }
+        await submitBatch(pairIds, prices);
     }
 }
 
+// ─── Start ──────────────────────────────────────────────────────────────────
 setInterval(updatePrices, 60_000);
 updatePrices();
-
-console.log('AchRWAOracle price feeder running...');
+console.log(`AchRWAOracle feeder running | RPC: ${RPC_URLS[0]} | Wallet: ${wallet.address}`);

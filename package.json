@@ -3,7 +3,13 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node oracle.js"
+    "start": "node oracle.js",
+    "monitor": "node monitor.js",
+    "backup": "node backup.js",
+    "pm2": "pm2 start ecosystem.config.cjs",
+    "pm2:stop": "pm2 stop all",
+    "pm2:restart": "pm2 restart all",
+    "pm2:logs": "pm2 logs"
   },
   "dependencies": {
     "dotenv": "^16.6.1",

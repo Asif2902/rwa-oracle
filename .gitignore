@@ -2,6 +2,7 @@
 !oracle.js
 !monitor.js
 !backup.js
+!ecosystem.config.cjs
 !.gitignore
 !.env.example
 .env

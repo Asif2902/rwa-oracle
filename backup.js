@@ -3,128 +3,149 @@ import { ethers } from 'ethers';
 import dotenv from 'dotenv';
 dotenv.config();
 
-const RPC_URL = process.env.RPC_URL;
+// ─── RPC Fallback ───────────────────────────────────────────────────────────
+const RPC_URLS = [
+    process.env.RPC_URL,
+    "https://rpc.blockdaemon.testnet.arc.network",
+    "https://rpc.drpc.testnet.arc.network",
+    "https://rpc.quicknode.testnet.arc.network"
+].filter(Boolean);
+
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 const ARCANSCAN_API = "https://testnet.arcscan.app/api/v2";
 
-const PAIR_IDS = {
-    AAPL: 1,
-    GOOGL: 2,
-    WTI: 3,
-    GOLD: 4,
-    SILVER: 5
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+
+const PRICE_SOURCES = {
+    AAPL: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/AAPL" }
+    ],
+    GOOGL: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/stocks/GOOGL" }
+    ],
+    WTI: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F" }
+    ],
+    GOLD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GC=F" }
+    ],
+    SILVER: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ]
 };
 
-const ENDPOINTS = {
-    AAPL: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL",
-    GOOGL: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL",
-    WTI: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F",
-    GOLD: "https://query1.finance.yahoo.com/v8/finance/chart/GC=F",
-    SILVER: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F"
-};
+let currentRpcIndex = 0;
+function getProvider() {
+    return new ethers.JsonRpcProvider(RPC_URLS[currentRpcIndex % RPC_URLS.length]);
+}
+function rotateRpc() {
+    currentRpcIndex++;
+    return getProvider();
+}
 
-const provider = new ethers.JsonRpcProvider(RPC_URL);
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+let provider = getProvider();
+let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
-    "function submitPrice(uint256 pairId, uint256 price) external",
-    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
-    "function isSubmitter(address) view returns (bool)"
+    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external"
 ];
-const registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
+let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
 let active = false;
-const INACTIVITY_THRESHOLD = 300; // 5 minutes in seconds
+const INACTIVITY_THRESHOLD = 300;
 
-// Check if primary oracle has submitted recently
 async function checkPrimaryActivity() {
     try {
-        const res = await fetch(`${ARCANSCAN_API}/addresses/${REGISTRY_ADDRESS}/transactions?filter=to`);
+        const res = await fetch(`${ARCANSCAN_API}/addresses/${REGISTRY_ADDRESS}/transactions?filter=to`, {
+            signal: AbortSignal.timeout(15000)
+        });
         const data = await res.json();
-        
         if (!data.items || data.items.length === 0) {
-            return { active: false, lastTx: null, age: Infinity };
+            return { active: false, age: Infinity };
         }
-        
-        const lastTx = data.items[0];
-        const lastTxTime = new Date(lastTx.timestamp).getTime() / 1000;
+        const lastTxTime = new Date(data.items[0].timestamp).getTime() / 1000;
         const age = Math.floor(Date.now() / 1000) - lastTxTime;
-        
-        return {
-            active: age < INACTIVITY_THRESHOLD,
-            lastTx: lastTx.hash,
-            age: age
-        };
+        return { active: age < INACTIVITY_THRESHOLD, age };
     } catch (err) {
-        console.error(`[${new Date().toISOString()}] API error:`, err.message);
-        return { active: false, lastTx: null, age: Infinity, error: err.message };
+        console.error(`[ArcScan] error: ${err.message}`);
+        return { active: false, age: Infinity };
     }
 }
 
 async function fetchPrice(symbol) {
-    try {
-        const res = await fetch(ENDPOINTS[symbol], {
-            headers: { 'User-Agent': 'Mozilla/5.0' }
-        });
-        const data = await res.json();
-        const price = data.chart.result[0].meta.regularMarketPrice;
-        if (!price) throw new Error(`No price for ${symbol}`);
-        return ethers.parseUnits(price.toString(), 18);
-    } catch (err) {
-        console.error(`Error fetching ${symbol}:`, err.message);
-        return null;
-    }
-}
-
-async function submitPrices() {
-    const pairIds = [];
-    const prices = [];
-
-    for (const symbol of Object.keys(PAIR_IDS)) {
-        const price = await fetchPrice(symbol);
-        if (price) {
-            pairIds.push(PAIR_IDS[symbol]);
-            prices.push(price);
+    const sources = PRICE_SOURCES[symbol];
+    for (const source of sources) {
+        try {
+            const res = await fetch(source.url, {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                signal: AbortSignal.timeout(10000)
+            });
+            let price;
+            if (source.type === "yahoo") {
+                const data = await res.json();
+                price = data.chart?.result?.[0]?.meta?.regularMarketPrice;
+            } else if (source.type === "stockprices") {
+                const data = await res.json();
+                price = data.Price;
+            }
+            if (price) return ethers.parseUnits(price.toString(), 18);
+        } catch (err) {
+            console.error(`[Price] ${source.type} failed for ${symbol}: ${err.message}`);
         }
     }
+    return null;
+}
 
-    if (pairIds.length > 0) {
+async function submitBatch(pairIds, prices, retries = 3) {
+    for (let i = 0; i < retries; i++) {
         try {
             const tx = await registry.submitPriceBatch(pairIds, prices);
             console.log(`[${new Date().toISOString()}] BACKUP TX: ${tx.hash}`);
             const receipt = await tx.wait();
             console.log(`Confirmed in block ${receipt.blockNumber}`);
-            pairIds.forEach((id, i) => {
-                console.log(`  ${Object.keys(PAIR_IDS).find(k => PAIR_IDS[k] === id)}: ${ethers.formatUnits(prices[i], 18)}`);
-            });
+            return true;
         } catch (err) {
-            console.error(`[${new Date().toISOString()}] Error:`, err.message);
+            console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
+            if (i < retries - 1) {
+                provider = rotateRpc();
+                wallet = new ethers.Wallet(PRIVATE_KEY, provider);
+                registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
+                await new Promise(r => setTimeout(r, 2000));
+            }
         }
     }
+    return false;
 }
 
 async function monitor() {
     const status = await checkPrimaryActivity();
-    
-    console.log(`[${new Date().toISOString()}] Primary status: ${status.active ? 'ACTIVE' : 'INACTIVE'} (last tx ${status.age}s ago)`);
-    
+    console.log(`[${new Date().toISOString()}] Primary: ${status.active ? 'ACTIVE' : 'INACTIVE'} (${status.age}s)`);
+
     if (!status.active) {
         if (!active) {
             console.log(`[${new Date().toISOString()}] ⚠️ PRIMARY DOWN - BACKUP ACTIVATED`);
             active = true;
         }
-        await submitPrices();
+        const pairIds = [];
+        const prices = [];
+        for (const symbol of Object.keys(PAIR_IDS)) {
+            const price = await fetchPrice(symbol);
+            if (price) {
+                pairIds.push(PAIR_IDS[symbol]);
+                prices.push(price);
+            }
+        }
+        if (pairIds.length > 0) await submitBatch(pairIds, prices);
     } else {
         if (active) {
-            console.log(`[${new Date().toISOString()}] ✅ PRIMARY BACK ONLINE - BACKUP STANDBY`);
+            console.log(`[${new Date().toISOString()}] ✅ PRIMARY BACK - BACKUP STANDBY`);
             active = false;
         }
     }
 }
 
-// Check every 30 seconds
 setInterval(monitor, 30_000);
 monitor();
-
-console.log('AchRWAOracle backup server running...');
-console.log('Wallet:', wallet.address);
+console.log(`AchRWAOracle backup running | Wallet: ${wallet.address}`);
