@@ -47,13 +47,11 @@ const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
 const PRICE_SOURCES = {
     AAPL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL" },
-        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/AAPL" },
-        { type: "stockprices", url: "https://stockprices.dev/api/stocks/AAPL" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/AAPL" }
     ],
     GOOGL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL" },
-        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GOOGL" },
-        { type: "stockprices", url: "https://stockprices.dev/api/stocks/GOOGL" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GOOGL" }
     ],
     WTI: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F" },
