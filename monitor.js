@@ -84,7 +84,14 @@ const registryAbi = [
 ];
 let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
-const DEVIATION_THRESHOLD = 5_000;
+const DEVIATION_THRESHOLD = 10; // 0.1% = 10 basis points
+const PRICE_CACHE_TTL = 10_000; // Refresh API prices every 10 seconds
+const CHECK_INTERVAL = 500; // Compare on-chain every 0.5 seconds (block time)
+const STALE_THRESHOLD = 300; // 5 minutes
+
+// ─── Price Cache ─────────────────────────────────────────────────────────────
+let priceCache = {};
+let lastCacheRefresh = 0;
 
 async function fetchApiPrice(symbol) {
     const sources = PRICE_SOURCES[symbol];
@@ -101,25 +108,49 @@ async function fetchApiPrice(symbol) {
             if (source.type === "yahoo") {
                 const data = await res.json();
                 price = data.chart?.result?.[0]?.meta?.regularMarketPrice;
-            } else if (source.type === "stockprices") {
-                const data = await res.json();
-                price = data.Price;
             }
             if (price) return ethers.parseUnits(price.toString(), 18);
         } catch (err) {
-            console.error(`[Monitor] ${source.type} failed for ${symbol}: ${err.message}`);
+            console.error(`[Price] ${source.type} failed for ${symbol}: ${err.message}`);
         }
     }
     return null;
 }
 
+async function refreshPriceCache() {
+    const symbols = Object.keys(PAIR_IDS);
+    // Fetch one symbol at a time with small delay to avoid burst
+    for (const symbol of symbols) {
+        const price = await fetchApiPrice(symbol);
+        if (price) {
+            priceCache[symbol] = { price, fetchedAt: Date.now() };
+        }
+        await new Promise(r => setTimeout(r, 200)); // 200ms between each symbol
+    }
+    lastCacheRefresh = Date.now();
+}
+
+function getCachedPrice(symbol) {
+    const cached = priceCache[symbol];
+    if (!cached) return null;
+    // Use cache if fresh (< 15s old), otherwise return null to trigger refresh
+    if (Date.now() - cached.fetchedAt < 15_000) return cached.price;
+    return null;
+}
+
+// ─── Submit ──────────────────────────────────────────────────────────────────
+let submitting = false;
+
 async function submitCorrection(pairIds, prices, retries = 3) {
+    if (submitting) return false;
+    submitting = true;
     for (let i = 0; i < retries; i++) {
         try {
             const tx = await registry.submitPriceBatch(pairIds, prices);
             console.log(`[Monitor] TX: ${tx.hash}`);
             await tx.wait();
             lastCorrection = tx.hash;
+            submitting = false;
             return true;
         } catch (err) {
             console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
@@ -131,12 +162,14 @@ async function submitCorrection(pairIds, prices, retries = 3) {
             }
         }
     }
+    submitting = false;
     return false;
 }
 
-async function monitor() {
+// ─── Fast check (every 0.5s) - uses cached prices ───────────────────────────
+async function fastCheck() {
+    if (submitting) return;
     try {
-        console.log(`[${new Date().toISOString()}] Checking...`);
         const mismatches = [];
 
         for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
@@ -145,30 +178,36 @@ async function monitor() {
                 const onChainPrice = pair.price;
                 const lastUpdated = Number(pair.lastUpdated);
 
-                if (onChainPrice === 0n) {
-                    console.log(`  ${symbol}: No price yet`);
-                    continue;
-                }
+                if (onChainPrice === 0n) continue;
 
-                const apiPrice = await fetchApiPrice(symbol);
-                if (!apiPrice) continue;
+                const cachedPrice = getCachedPrice(symbol);
+                if (!cachedPrice) continue; // No cache, wait for refresh
 
-                const diff = onChainPrice > apiPrice ? onChainPrice - apiPrice : apiPrice - onChainPrice;
+                const diff = onChainPrice > cachedPrice ? onChainPrice - cachedPrice : cachedPrice - onChainPrice;
                 const deviationBps = Number((diff * 10000n) / onChainPrice);
                 const age = Math.floor(Date.now() / 1000) - lastUpdated;
 
-                console.log(`  ${symbol}: on-chain=${ethers.formatUnits(onChainPrice, 18)} api=${ethers.formatUnits(apiPrice, 18)} dev=${(deviationBps / 100).toFixed(2)}% age=${age}s`);
-
                 if (deviationBps >= DEVIATION_THRESHOLD) {
-                    console.log(`  [!] ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(2)}%`);
-                    mismatches.push({ pairId, symbol, apiPrice });
+                    console.log(`[!] ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(4)}% | on-chain=${ethers.formatUnits(onChainPrice, 18)} cached=${ethers.formatUnits(cachedPrice, 18)}`);
+                    // Re-fetch fresh price to confirm before submitting
+                    const freshPrice = await fetchApiPrice(symbol);
+                    if (freshPrice) {
+                        const freshDiff = onChainPrice > freshPrice ? onChainPrice - freshPrice : freshPrice - onChainPrice;
+                        const freshDevBps = Number((freshDiff * 10000n) / onChainPrice);
+                        if (freshDevBps >= DEVIATION_THRESHOLD) {
+                            mismatches.push({ pairId, symbol, apiPrice: freshPrice });
+                        } else {
+                            console.log(`  ${symbol}: Fresh check OK (${(freshDevBps / 100).toFixed(4)}%), skipping`);
+                        }
+                    }
                 }
-                if (age > 300) {
-                    console.log(`  [!] ${symbol} STALE: ${age}s`);
-                    mismatches.push({ pairId, symbol, apiPrice });
+
+                if (age > STALE_THRESHOLD) {
+                    const freshPrice = await fetchApiPrice(symbol);
+                    if (freshPrice) mismatches.push({ pairId, symbol, apiPrice: freshPrice });
                 }
             } catch (err) {
-                console.error(`  ${symbol} error: ${err.message}`);
+                // Silent in fast check, errors logged in refresh
             }
         }
 
@@ -187,7 +226,7 @@ async function monitor() {
     }
 }
 
-// ─── Keep alive loop (prevents Railway from sleeping) ───────────────────────
+// ─── Keep alive ──────────────────────────────────────────────────────────────
 function keepAlive() {
     setInterval(() => {
         fetch(`http://localhost:${PORT}/health`).catch(() => {});
@@ -195,7 +234,14 @@ function keepAlive() {
 }
 
 // ─── Start ──────────────────────────────────────────────────────────────────
-setInterval(monitor, 30_000);
-monitor();
-keepAlive();
 console.log(`[Monitor] Running | Wallet: ${wallet.address}`);
+console.log(`[Monitor] Fast check: ${CHECK_INTERVAL}ms | Cache refresh: ${PRICE_CACHE_TTL/1000}s | Threshold: ${DEVIATION_THRESHOLD/100}%`);
+
+// Refresh cache every 10s
+refreshPriceCache();
+setInterval(refreshPriceCache, PRICE_CACHE_TTL);
+
+// Fast on-chain check every 0.5s using cached prices
+setInterval(fastCheck, CHECK_INTERVAL);
+
+keepAlive();

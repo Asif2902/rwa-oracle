@@ -10,6 +10,8 @@ let lastCheck = null;
 let lastTx = null;
 let isHealthy = true;
 let backupActive = false;
+let lastSubmitTime = 0;
+const BACKUP_SUBMIT_INTERVAL = 300000; // 5 minutes
 
 const server = http.createServer((req, res) => {
     if (req.url === '/health' || req.url === '/') {
@@ -167,21 +169,35 @@ async function monitor() {
             if (!backupActive) {
                 console.log(`[Backup] PRIMARY DOWN - ACTIVATING`);
                 backupActive = true;
+                lastSubmitTime = 0; // Reset to submit immediately on first activation
             }
-            const pairIds = [];
-            const prices = [];
-            for (const symbol of Object.keys(PAIR_IDS)) {
-                const price = await fetchPrice(symbol);
-                if (price) {
-                    pairIds.push(PAIR_IDS[symbol]);
-                    prices.push(price);
+            
+            const now = Date.now();
+            const timeSinceLastSubmit = now - lastSubmitTime;
+            
+            if (timeSinceLastSubmit >= BACKUP_SUBMIT_INTERVAL) {
+                console.log(`[Backup] Submitting prices (last submit: ${Math.floor(timeSinceLastSubmit/1000)}s ago)`);
+                const pairIds = [];
+                const prices = [];
+                for (const symbol of Object.keys(PAIR_IDS)) {
+                    const price = await fetchPrice(symbol);
+                    if (price) {
+                        pairIds.push(PAIR_IDS[symbol]);
+                        prices.push(price);
+                    }
                 }
+                if (pairIds.length > 0) {
+                    const success = await submitBatch(pairIds, prices);
+                    if (success) lastSubmitTime = now;
+                }
+            } else {
+                console.log(`[Backup] Waiting ${Math.ceil((BACKUP_SUBMIT_INTERVAL - timeSinceLastSubmit)/1000)}s until next submit`);
             }
-            if (pairIds.length > 0) await submitBatch(pairIds, prices);
         } else {
             if (backupActive) {
                 console.log(`[Backup] PRIMARY BACK - STANDBY`);
                 backupActive = false;
+                lastSubmitTime = 0;
             }
         }
         lastCheck = new Date().toISOString();
