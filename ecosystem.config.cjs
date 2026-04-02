@@ -7,7 +7,8 @@ module.exports = {
             max_restarts: 50,
             restart_delay: 5000,
             max_memory_restart: "200M",
-            exp_backoff_restart_delay: 100
+            exp_backoff_restart_delay: 100,
+            env: { PORT: 3000 }
         },
         {
             name: "monitor",
@@ -16,7 +17,8 @@ module.exports = {
             max_restarts: 50,
             restart_delay: 5000,
             max_memory_restart: "200M",
-            exp_backoff_restart_delay: 100
+            exp_backoff_restart_delay: 100,
+            env: { PORT: 3001 }
         },
         {
             name: "backup",
@@ -25,7 +27,8 @@ module.exports = {
             max_restarts: 50,
             restart_delay: 5000,
             max_memory_restart: "200M",
-            exp_backoff_restart_delay: 100
+            exp_backoff_restart_delay: 100,
+            env: { PORT: 3002 }
         }
     ]
 };
