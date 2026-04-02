@@ -9,7 +9,21 @@
     "pm2": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop all",
     "pm2:restart": "pm2 restart all",
-    "pm2:logs": "pm2 logs"
+    "pm2:delete": "pm2 delete all",
+    "pm2:status": "pm2 list",
+    "pm2:logs": "pm2 logs",
+    "pm2:logs:oracle": "pm2 logs oracle",
+    "pm2:logs:monitor": "pm2 logs monitor",
+    "pm2:logs:backup": "pm2 logs backup",
+    "pm2:start:oracle": "pm2 start oracle.js --name oracle",
+    "pm2:start:monitor": "pm2 start monitor.js --name monitor",
+    "pm2:start:backup": "pm2 start backup.js --name backup",
+    "pm2:stop:oracle": "pm2 stop oracle",
+    "pm2:stop:monitor": "pm2 stop monitor",
+    "pm2:stop:backup": "pm2 stop backup",
+    "pm2:restart:oracle": "pm2 restart oracle",
+    "pm2:restart:monitor": "pm2 restart monitor",
+    "pm2:restart:backup": "pm2 restart backup"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
