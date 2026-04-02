@@ -35,7 +35,7 @@ The AchRWA price oracle system is designed with **zero single points of failure*
 |----------|-------|
 | **File** | `oracle.js` |
 | **Host** | VPS 1 |
-| **Wallet** | `0x6e0df2d65d309b55B217B5237657302386E75584` |
+| **Wallet** | `0x20262821B19ADf7BC1f61bEd48f5D254898E42B4` |
 | **Role** | Authorized price submitter |
 | **Interval** | Every 60 seconds |
 
@@ -63,7 +63,7 @@ The AchRWA price oracle system is designed with **zero single points of failure*
 |----------|-------|
 | **File** | `monitor.js` |
 | **Host** | VPS 2 |
-| **Wallet** | `0x20262821B19ADf7BC1f61bEd48f5D254898E42B4` |
+| **Wallet** | `0x6e0df2d65d309b55B217B5237657302386E75584` |
 | **Role** | Authorized price submitter (backup) |
 | **Interval** | Every 30 seconds |
 
@@ -150,9 +150,9 @@ All services use 4 RPC endpoints with automatic failover:
 
 | Role | Address | Key Owner |
 |------|---------|-----------|
-| Primary Oracle | `0x6e0df2d65d309b55B217B5237657302386E75584` | VPS 1 |
-| Monitor | `0x20262821B19ADf7BC1f61bEd48f5D254898E42B4` | VPS 2 |
-| Backup | `0x6e0df2d65d309b55B217B5237657302386E75584` | VPS 3 |
+| Primary Oracle | `0x20262821B19ADf7BC1f61bEd48f5D254898E42B4` | VPS 1 |
+| Monitor | `0x6e0df2d65d309b55B217B5237657302386E75584` | VPS 2 |
+| Backup | `0x6e0df2d65d309b55B217B5237657302386E75584` | Railway |
 
 ---
 
