@@ -6,7 +6,7 @@ module.exports = {
             autorestart: true,
             max_restarts: 50,
             restart_delay: 5000,
-            max_memory_restart: "200M",
+            max_memory_restart: "400M",
             exp_backoff_restart_delay: 100,
             env: { PORT: 3000 }
         },
@@ -16,7 +16,7 @@ module.exports = {
             autorestart: true,
             max_restarts: 50,
             restart_delay: 5000,
-            max_memory_restart: "200M",
+            max_memory_restart: "400M",
             exp_backoff_restart_delay: 100,
             env: { PORT: 3001 }
         },
@@ -26,7 +26,7 @@ module.exports = {
             autorestart: true,
             max_restarts: 50,
             restart_delay: 5000,
-            max_memory_restart: "200M",
+            max_memory_restart: "400M",
             exp_backoff_restart_delay: 100,
             env: { PORT: 3002 }
         }

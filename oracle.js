@@ -30,6 +30,37 @@ server.listen(PORT, () => {
     console.log(`[HTTP] Health server on port ${PORT}`);
 });
 
+// ─── Telegram Alerts ─────────────────────────────────────────────────────────
+// Add TG_TOKEN and TG_CHAT_ID to your .env to enable alerts
+const TG_TOKEN = process.env.TG_TOKEN;
+const TG_CHAT_ID = process.env.TG_CHAT_ID;
+
+// Alert categories to reduce noise and prevent alert fatigue
+// CRITICAL: Immediate action required (TX failures, total failures)
+// WARNING: Attention needed but not immediate (sanity check failures)
+// CORRECTION: Price corrections (normal monitoring activity)
+// INFO: Normal operations (submissions, status changes)
+const ALERT_CATEGORIES = {
+    CRITICAL: { emoji: '🚨', label: 'CRITICAL' },
+    WARNING: { emoji: '⚠️', label: 'WARNING' },
+    CORRECTION: { emoji: '🔧', label: 'CORRECTION' },
+    INFO: { emoji: 'ℹ️', label: 'INFO' }
+};
+
+async function alert(msg, category = 'CRITICAL') {
+    if (!TG_TOKEN || !TG_CHAT_ID) return;
+    try {
+        const cat = ALERT_CATEGORIES[category] || ALERT_CATEGORIES.CRITICAL;
+        await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `${cat.emoji} [AchRWA Oracle] [${cat.label}] ${msg}` })
+        });
+    } catch (err) {
+        console.error(`[Alert] Telegram failed: ${err.message}`);
+    }
+}
+
 // ─── RPC Fallback List (official Arc docs) ─────────────────────────────────
 const RPC_URLS = [
     process.env.RPC_URL,
@@ -41,17 +72,19 @@ const RPC_URLS = [
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, MSFT: 6, TSLA: 7, NATGAS: 8, NVDA: 9, GBPUSD: 10 };
 
 // ─── Price Sources (primary + backups) ──────────────────────────────────────
 const PRICE_SOURCES = {
     AAPL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/AAPL" },
-        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/AAPL" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/AAPL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=AAPL" }
     ],
     GOOGL: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GOOGL" },
-        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GOOGL" }
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GOOGL" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=GOOGL" }
     ],
     WTI: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/CL=F" },
@@ -64,6 +97,29 @@ const PRICE_SOURCES = {
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
         { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ],
+    NVDA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=NVDA" }
+    ],
+    MSFT: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=MSFT" }
+    ],
+    TSLA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=TSLA" }
+    ],
+    NATGAS: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NG=F" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NG=F" }
+    ],
+    GBPUSD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GBPUSD=X" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GBPUSD=X" }
     ]
 };
 
@@ -85,9 +141,28 @@ let provider = getProvider();
 let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
     "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
-    "function isSubmitter(address) view returns (bool)"
+    "function isSubmitter(address) view returns (bool)",
+    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))"
 ];
 let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
+
+// ─── Price Sanity Check ─────────────────────────────────────────────────────
+// Rejects any price that deviates more than 20% from the last known good price.
+// Protects against corrupted API responses being submitted on-chain.
+const lastKnownGoodPrices = {};
+const MAX_PRICE_CHANGE_BPS = 2000; // 20%
+
+function isSanePrice(symbol, newPrice) {
+    const last = lastKnownGoodPrices[symbol];
+    if (!last) return true; // First ever price — accept it
+    const diff = newPrice > last ? newPrice - last : last - newPrice;
+    const changeBps = Number((diff * 10000n) / last);
+    if (changeBps > MAX_PRICE_CHANGE_BPS) {
+        console.error(`[Sanity] ${symbol}: ${(changeBps / 100).toFixed(1)}% change rejected (max ${MAX_PRICE_CHANGE_BPS / 100}%)`);
+        return false;
+    }
+    return true;
+}
 
 // ─── Price Fetch with fallback sources ──────────────────────────────────────
 async function fetchPrice(symbol) {
@@ -124,8 +199,12 @@ async function fetchPrice(symbol) {
 async function submitBatch(pairIds, prices, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
-            const tx = await registry.submitPriceBatch(pairIds, prices);
-            console.log(`[${new Date().toISOString()}] TX: ${tx.hash}`);
+            // Dynamic gas limit: 200k per pair + 100k base
+            const gasLimit = Math.min(3000000, 100000 + pairIds.length * 200000);
+            const tx = await registry.submitPriceBatch(pairIds, prices, {
+                gasLimit
+            });
+            console.log(`[${new Date().toISOString()}] TX: ${tx.hash} (gas: ${gasLimit})`);
             const receipt = await tx.wait();
             console.log(`Confirmed in block ${receipt.blockNumber}`);
             lastTx = tx.hash;
@@ -140,35 +219,82 @@ async function submitBatch(pairIds, prices, retries = 3) {
             }
         }
     }
+    await alert(`TX failed after ${retries} retries — oracle may be stale`, 'CRITICAL');
     return false;
 }
 
 // ─── Main update loop ───────────────────────────────────────────────────────
+// ─── Main update loop ───────────────────────────────────────────────
 async function updatePrices() {
     try {
-        const pairIds = [];
-        const prices = [];
-
-        for (const symbol of Object.keys(PAIR_IDS)) {
-            const price = await fetchPrice(symbol);
-            if (price) {
-                pairIds.push(PAIR_IDS[symbol]);
-                prices.push(price);
+        // Fetch on-chain state for all pairs
+        const pairStates = {};
+        for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
+            try {
+                const pair = await registry.getPair(pairId);
+                pairStates[symbol] = {
+                    pairId,
+                    price: pair.price,
+                    maxDeviation: Number(pair.maxDeviation),
+                    active: pair.active,
+                    frozen: pair.frozen
+                };
+            } catch (e) {
+                console.error(`[Update] Failed to fetch pair ${symbol}: ${e.message}`);
             }
         }
 
-        if (pairIds.length > 0) {
-            await submitBatch(pairIds, prices);
+        const pairIds = [];
+        const prices = [];
+
+        for (const [symbol, state] of Object.entries(pairStates)) {
+            if (!state.active || state.frozen) {
+                console.log(`[Update] Skipping ${symbol} — inactive or frozen`);
+                continue;
+            }
+
+            const newPrice = await fetchPrice(symbol);
+            if (!newPrice) continue;
+
+            // Check maxDeviation from on-chain price
+            if (state.price > 0n) {
+                const diff = newPrice > state.price ? newPrice - state.price : state.price - newPrice;
+                const deviationBps = Number((diff * 10000n) / state.price);
+                if (deviationBps > state.maxDeviation) {
+                    console.error(`[Update] ${symbol}: deviation ${(deviationBps / 100).toFixed(2)}% exceeds max ${state.maxDeviation / 100}% — skipping`);
+                    await alert(`${symbol} price deviation too high — skipped`, 'WARNING');
+                    continue;
+                }
+            }
+
+            // Check our sanity limit (20% from last known good)
+            if (!isSanePrice(symbol, newPrice)) {
+                await alert(`${symbol} price sanity check failed — skipped`, 'WARNING');
+                continue;
+            }
+
+            pairIds.push(state.pairId);
+            prices.push(newPrice);
+            lastKnownGoodPrices[symbol] = newPrice;
         }
+
+        if (pairIds.length === 0) {
+            isHealthy = false;
+            console.error('[Oracle] No valid prices to submit');
+            await alert('0 valid prices fetched — nothing submitted', 'CRITICAL');
+            return;
+        }
+
+        console.log(`[Oracle] Submitting ${pairIds.length} pairs in batch: [${pairIds.join(', ')}]`);
+        await submitBatch(pairIds, prices);
         lastRun = new Date().toISOString();
         isHealthy = true;
     } catch (err) {
         console.error(`[Update] Error: ${err.message}`);
         isHealthy = false;
+        await alert(`Unhandled error in updatePrices: ${err.message}`, 'CRITICAL');
     }
 }
-
-// ─── Keep alive loop (prevents Railway from sleeping) ───────────────────────
 function keepAlive() {
     setInterval(() => {
         fetch(`http://localhost:${PORT}/health`).catch(() => {});

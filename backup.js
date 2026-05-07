@@ -11,7 +11,11 @@ let lastTx = null;
 let isHealthy = true;
 let backupActive = false;
 let lastSubmitTime = 0;
-const BACKUP_SUBMIT_INTERVAL = 300000; // 5 minutes
+
+// Reduced from 300000 (5 min) to 90000 (90s).
+// When the backup is the ONLY thing running, 5 minutes between submissions
+// means prices go stale and the contract's maxStaleness threshold triggers.
+const BACKUP_SUBMIT_INTERVAL = 90_000;
 
 const server = http.createServer((req, res) => {
     if (req.url === '/health' || req.url === '/') {
@@ -34,6 +38,37 @@ server.listen(PORT, () => {
     console.log(`[HTTP] Health server on port ${PORT}`);
 });
 
+// ─── Telegram Alerts ─────────────────────────────────────────────────────────
+// Add TG_TOKEN and TG_CHAT_ID to your .env to enable alerts
+const TG_TOKEN = process.env.TG_TOKEN;
+const TG_CHAT_ID = process.env.TG_CHAT_ID;
+
+// Alert categories to reduce noise and prevent alert fatigue
+// CRITICAL: Immediate action required (TX failures, total failures)
+// WARNING: Attention needed but not immediate (sanity check failures)
+// CORRECTION: Price corrections (normal monitoring activity)
+// INFO: Normal operations (submissions, status changes)
+const ALERT_CATEGORIES = {
+    CRITICAL: { emoji: '🚨', label: 'CRITICAL' },
+    WARNING: { emoji: '⚠️', label: 'WARNING' },
+    CORRECTION: { emoji: '🔧', label: 'CORRECTION' },
+    INFO: { emoji: 'ℹ️', label: 'INFO' }
+};
+
+async function alert(msg, category = 'CRITICAL') {
+    if (!TG_TOKEN || !TG_CHAT_ID) return;
+    try {
+        const cat = ALERT_CATEGORIES[category] || ALERT_CATEGORIES.CRITICAL;
+        await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `${cat.emoji} [AchRWA Backup] [${cat.label}] ${msg}` })
+        });
+    } catch (err) {
+        console.error(`[Alert] Telegram failed: ${err.message}`);
+    }
+}
+
 // ─── RPC Fallback ───────────────────────────────────────────────────────────
 const RPC_URLS = [
     process.env.RPC_URL,
@@ -42,11 +77,16 @@ const RPC_URLS = [
     "https://rpc.quicknode.testnet.arc.network"
 ].filter(Boolean);
 
-const PRIVATE_KEY = process.env.PRIVATE_KEY;
+// IMPORTANT: BACKUP_KEY must be a different wallet from MONITOR_KEY.
+// If they share the same key and both try to submit at the same time,
+// they will collide on the same nonce and one TX will fail.
+// Add BACKUP_KEY=<separate private key> to your Railway .env.
+// Falls back to PRIVATE_KEY only if BACKUP_KEY is not set (temporary — set it ASAP).
+const PRIVATE_KEY = process.env.BACKUP_KEY || process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 const ARCANSCAN_API = "https://testnet.arcscan.app/api/v2";
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, MSFT: 6, TSLA: 7, NATGAS: 8, NVDA: 9, GBPUSD: 10 };
 
 const PRICE_SOURCES = {
     AAPL: [
@@ -68,6 +108,26 @@ const PRICE_SOURCES = {
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
         { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ],
+    NVDA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NVDA" }
+    ],
+    MSFT: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/MSFT" }
+    ],
+    TSLA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/TSLA" }
+    ],
+    NATGAS: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NG=F" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NG=F" }
+    ],
+    GBPUSD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GBPUSD=X" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GBPUSD=X" }
     ]
 };
 
@@ -84,11 +144,19 @@ function rotateRpc() {
 let provider = getProvider();
 let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
-    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external"
+    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
+    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))"
 ];
 let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
 const INACTIVITY_THRESHOLD = 300;
+
+// ─── ArcScan consecutive failure guard ──────────────────────────────────────
+// ArcScan is the only public API on Arc, so we cannot replace it.
+// Instead, we require N consecutive failures before activating the backup
+// to avoid false triggers from transient ArcScan blips or timeouts.
+let arcscanFailCount = 0;
+const ARCSCAN_FAIL_THRESHOLD = 3; // ~90 seconds of consecutive failures before activating
 
 async function checkPrimaryActivity() {
     try {
@@ -99,6 +167,7 @@ async function checkPrimaryActivity() {
         });
         clearTimeout(timeout);
         const data = await res.json();
+        arcscanFailCount = 0; // Reset failure counter on any successful response
         if (!data.items || data.items.length === 0) {
             return { active: false, age: Infinity };
         }
@@ -106,9 +175,35 @@ async function checkPrimaryActivity() {
         const age = Math.floor(Date.now() / 1000) - lastTxTime;
         return { active: age < INACTIVITY_THRESHOLD, age };
     } catch (err) {
-        console.error(`[ArcScan] error: ${err.message}`);
+        arcscanFailCount++;
+        console.error(`[ArcScan] error ${arcscanFailCount}/${ARCSCAN_FAIL_THRESHOLD}: ${err.message}`);
+        // Treat ArcScan errors as "primary is fine" until we hit the threshold.
+        // This prevents a single network hiccup from falsely activating backup
+        // and causing nonce collisions with the still-running primary oracle.
+        if (arcscanFailCount < ARCSCAN_FAIL_THRESHOLD) {
+            return { active: true, age: 0 };
+        }
+        console.warn(`[ArcScan] ${ARCSCAN_FAIL_THRESHOLD} consecutive failures — treating primary as inactive`);
         return { active: false, age: Infinity };
     }
+}
+
+// ─── Price Sanity Check ─────────────────────────────────────────────────────
+// Rejects any price that deviates more than 20% from the last known good price.
+// Protects against submitting corrupted API responses on-chain.
+const lastKnownGoodPrices = {};
+const MAX_PRICE_CHANGE_BPS = 2000; // 20%
+
+function isSanePrice(symbol, newPrice) {
+    const last = lastKnownGoodPrices[symbol];
+    if (!last) return true; // First ever price — accept it
+    const diff = newPrice > last ? newPrice - last : last - newPrice;
+    const changeBps = Number((diff * 10000n) / last);
+    if (changeBps > MAX_PRICE_CHANGE_BPS) {
+        console.error(`[Sanity] ${symbol}: ${(changeBps / 100).toFixed(1)}% change rejected (max ${MAX_PRICE_CHANGE_BPS / 100}%)`);
+        return false;
+    }
+    return true;
 }
 
 async function fetchPrice(symbol) {
@@ -141,11 +236,16 @@ async function fetchPrice(symbol) {
 async function submitBatch(pairIds, prices, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
-            const tx = await registry.submitPriceBatch(pairIds, prices);
-            console.log(`[${new Date().toISOString()}] BACKUP TX: ${tx.hash}`);
+            // Dynamic gas limit: 200k per pair + 100k base
+            const gasLimit = Math.min(3000000, 100000 + pairIds.length * 200000);
+            const tx = await registry.submitPriceBatch(pairIds, prices, {
+                gasLimit
+            });
+            console.log(`[${new Date().toISOString()}] BACKUP TX: ${tx.hash} (gas: ${gasLimit})`);
             const receipt = await tx.wait();
             console.log(`Confirmed in block ${receipt.blockNumber}`);
             lastTx = tx.hash;
+            await alert(`Backup submitted ${pairIds.length} prices — TX: ${tx.hash}`, 'INFO');
             return true;
         } catch (err) {
             console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
@@ -157,6 +257,7 @@ async function submitBatch(pairIds, prices, retries = 3) {
             }
         }
     }
+    await alert(`BACKUP TX failed after ${retries} retries — prices may be stale`, 'CRITICAL');
     return false;
 }
 
@@ -170,34 +271,82 @@ async function monitor() {
                 console.log(`[Backup] PRIMARY DOWN - ACTIVATING`);
                 backupActive = true;
                 lastSubmitTime = 0; // Reset to submit immediately on first activation
+                await alert('PRIMARY ORACLE DOWN — backup is now ACTIVE', 'CRITICAL');
             }
-            
+
             const now = Date.now();
             const timeSinceLastSubmit = now - lastSubmitTime;
-            
+
             if (timeSinceLastSubmit >= BACKUP_SUBMIT_INTERVAL) {
-                console.log(`[Backup] Submitting prices (last submit: ${Math.floor(timeSinceLastSubmit/1000)}s ago)`);
-                const pairIds = [];
-                const prices = [];
-                for (const symbol of Object.keys(PAIR_IDS)) {
-                    const price = await fetchPrice(symbol);
-                    if (price) {
-                        pairIds.push(PAIR_IDS[symbol]);
-                        prices.push(price);
+                console.log(`[Backup] Submitting prices (last submit: ${Math.floor(timeSinceLastSubmit / 1000)}s ago)`);
+                
+                // Fetch on-chain state for all pairs
+                const pairStates = {};
+                for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
+                    try {
+                        const pair = await registry.getPair(pairId);
+                        pairStates[symbol] = {
+                            pairId,
+                            price: pair.price,
+                            maxDeviation: Number(pair.maxDeviation),
+                            active: pair.active,
+                            frozen: pair.frozen
+                        };
+                    } catch (e) {
+                        console.error(`[Backup] Failed to fetch pair ${symbol}: ${e.message}`);
                     }
                 }
+
+                const pairIds = [];
+                const prices = [];
+                
+                for (const [symbol, state] of Object.entries(pairStates)) {
+                    if (!state.active || state.frozen) {
+                        console.log(`[Backup] Skipping ${symbol} — inactive or frozen`);
+                        continue;
+                    }
+
+                    const price = await fetchPrice(symbol);
+                    if (!price) continue;
+
+                    // Check maxDeviation from on-chain price
+                    if (state.price > 0n) {
+                        const diff = price > state.price ? price - state.price : state.price - price;
+                        const deviationBps = Number((diff * 10000n) / state.price);
+                        if (deviationBps > state.maxDeviation) {
+                            console.error(`[Backup] ${symbol}: deviation ${(deviationBps / 100).toFixed(2)}% exceeds max ${state.maxDeviation / 100}% — skipping`);
+                            await alert(`${symbol} price deviation too high — skipped`, 'WARNING');
+                            continue;
+                        }
+                    }
+
+                    // Check our sanity limit (20% from last known good)
+                    if (!isSanePrice(symbol, price)) {
+                        await alert(`${symbol} sanity check failed — skipped`, 'WARNING');
+                        continue;
+                    }
+
+                    pairIds.push(state.pairId);
+                    prices.push(price);
+                    lastKnownGoodPrices[symbol] = price;
+                }
+
                 if (pairIds.length > 0) {
+                    console.log(`[Backup] Submitting ${pairIds.length} pairs in batch: [${pairIds.join(', ')}]`);
                     const success = await submitBatch(pairIds, prices);
                     if (success) lastSubmitTime = now;
+                } else {
+                    await alert('Backup could not fetch any valid prices this cycle', 'CRITICAL');
                 }
             } else {
-                console.log(`[Backup] Waiting ${Math.ceil((BACKUP_SUBMIT_INTERVAL - timeSinceLastSubmit)/1000)}s until next submit`);
+                console.log(`[Backup] Waiting ${Math.ceil((BACKUP_SUBMIT_INTERVAL - timeSinceLastSubmit) / 1000)}s until next submit`);
             }
         } else {
             if (backupActive) {
                 console.log(`[Backup] PRIMARY BACK - STANDBY`);
                 backupActive = false;
                 lastSubmitTime = 0;
+                await alert('Primary oracle is back online — backup returning to STANDBY', 'INFO');
             }
         }
         lastCheck = new Date().toISOString();
