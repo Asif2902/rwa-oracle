@@ -144,7 +144,8 @@ function rotateRpc() {
 let provider = getProvider();
 let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
-    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external"
+    "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
+    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))"
 ];
 let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
@@ -276,25 +277,64 @@ async function monitor() {
 
             if (timeSinceLastSubmit >= BACKUP_SUBMIT_INTERVAL) {
                 console.log(`[Backup] Submitting prices (last submit: ${Math.floor(timeSinceLastSubmit / 1000)}s ago)`);
-                const pairIds = [];
-                const prices = [];
-                for (const symbol of Object.keys(PAIR_IDS)) {
-                    const price = await fetchPrice(symbol);
-                    if (price) {
-                        if (isSanePrice(symbol, price)) {
-                            pairIds.push(PAIR_IDS[symbol]);
-                            prices.push(price);
-                            lastKnownGoodPrices[symbol] = price; // Update last known good
-                        } else {
-                            await alert(`${symbol} sanity check failed during backup submission — skipped`, 'WARNING');
-                        }
+                
+                // Fetch on-chain state for all pairs
+                const pairStates = {};
+                for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
+                    try {
+                        const pair = await registry.getPair(pairId);
+                        pairStates[symbol] = {
+                            pairId,
+                            price: pair.price,
+                            maxDeviation: Number(pair.maxDeviation),
+                            active: pair.active,
+                            frozen: pair.frozen
+                        };
+                    } catch (e) {
+                        console.error(`[Backup] Failed to fetch pair ${symbol}: ${e.message}`);
                     }
                 }
+
+                const pairIds = [];
+                const prices = [];
+                
+                for (const [symbol, state] of Object.entries(pairStates)) {
+                    if (!state.active || state.frozen) {
+                        console.log(`[Backup] Skipping ${symbol} — inactive or frozen`);
+                        continue;
+                    }
+
+                    const price = await fetchPrice(symbol);
+                    if (!price) continue;
+
+                    // Check maxDeviation from on-chain price
+                    if (state.price > 0n) {
+                        const diff = price > state.price ? price - state.price : state.price - price;
+                        const deviationBps = Number((diff * 10000n) / state.price);
+                        if (deviationBps > state.maxDeviation) {
+                            console.error(`[Backup] ${symbol}: deviation ${(deviationBps / 100).toFixed(2)}% exceeds max ${state.maxDeviation / 100}% — skipping`);
+                            await alert(`${symbol} price deviation too high — skipped`, 'WARNING');
+                            continue;
+                        }
+                    }
+
+                    // Check our sanity limit (20% from last known good)
+                    if (!isSanePrice(symbol, price)) {
+                        await alert(`${symbol} sanity check failed — skipped`, 'WARNING');
+                        continue;
+                    }
+
+                    pairIds.push(state.pairId);
+                    prices.push(price);
+                    lastKnownGoodPrices[symbol] = price;
+                }
+
                 if (pairIds.length > 0) {
+                    console.log(`[Backup] Submitting ${pairIds.length} pairs in batch: [${pairIds.join(', ')}]`);
                     const success = await submitBatch(pairIds, prices);
                     if (success) lastSubmitTime = now;
                 } else {
-                    await alert('Backup could not fetch any prices this cycle', 'CRITICAL');
+                    await alert('Backup could not fetch any valid prices this cycle', 'CRITICAL');
                 }
             } else {
                 console.log(`[Backup] Waiting ${Math.ceil((BACKUP_SUBMIT_INTERVAL - timeSinceLastSubmit) / 1000)}s until next submit`);

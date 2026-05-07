@@ -263,6 +263,7 @@ async function fastCheck() {
                 const pair = await registry.getPair(pairId);
                 const onChainPrice = pair.price;
                 const lastUpdated = Number(pair.lastUpdated);
+                const maxDeviation = Number(pair.maxDeviation);
 
                 if (onChainPrice === 0n) continue;
 
@@ -273,14 +274,14 @@ async function fastCheck() {
                 const deviationBps = Number((diff * 10000n) / onChainPrice);
                 const age = Math.floor(Date.now() / 1000) - lastUpdated;
 
-                if (deviationBps >= DEVIATION_THRESHOLD) {
+                if (deviationBps >= maxDeviation) {
                     console.log(`[!] ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(4)}% | on-chain=${ethers.formatUnits(onChainPrice, 18)} cached=${ethers.formatUnits(cachedPrice, 18)}`);
                     // Re-fetch fresh price to confirm before submitting
                     const freshPrice = await fetchApiPrice(symbol);
                     if (freshPrice) {
                         const freshDiff = onChainPrice > freshPrice ? onChainPrice - freshPrice : freshPrice - onChainPrice;
                         const freshDevBps = Number((freshDiff * 10000n) / onChainPrice);
-                        if (freshDevBps >= DEVIATION_THRESHOLD) {
+                        if (freshDevBps >= maxDeviation) {
                             if (isSanePrice(symbol, freshPrice)) {
                                 mismatches.push({ pairId, symbol, apiPrice: freshPrice });
                             } else {
