@@ -72,7 +72,7 @@ const RPC_URLS = [
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, NVDA: 6, MSFT: 7, TSLA: 8, NATGAS: 9, GBPUSD: 10 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, MSFT: 6, TSLA: 7, NATGAS: 8, NVDA: 9, GBPUSD: 10 };
 
 // ─── Price Sources (primary + backups) ──────────────────────────────────────
 const PRICE_SOURCES = {
