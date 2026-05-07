@@ -141,7 +141,8 @@ let provider = getProvider();
 let wallet = new ethers.Wallet(PRIVATE_KEY, provider);
 const registryAbi = [
     "function submitPriceBatch(uint256[] calldata pairIds, uint256[] calldata prices) external",
-    "function isSubmitter(address) view returns (bool)"
+    "function isSubmitter(address) view returns (bool)",
+    "function getPair(uint256 pairId) view returns (tuple(uint256 pairId, string name, string symbol, uint8 category, string priceSource, string description, address synth, uint256 price, uint256 lastUpdated, uint256 maxStaleness, uint256 maxDeviation, bool active, bool frozen, uint256 createdAt))"
 ];
 let registry = new ethers.Contract(REGISTRY_ADDRESS, registryAbi, wallet);
 
@@ -221,54 +222,69 @@ async function submitBatch(pairIds, prices, retries = 3) {
 }
 
 // ─── Main update loop ───────────────────────────────────────────────────────
-const ORIGINAL_PAIRS = ['AAPL', 'GOOGL', 'WTI', 'GOLD', 'SILVER'];
-const NEW_PAIRS = ['MSFT', 'TSLA', 'NATGAS', 'NVDA', 'GBPUSD'];
-
+// ─── Main update loop ───────────────────────────────────────────────
 async function updatePrices() {
     try {
-        // Submit original 5 pairs
+        // Fetch on-chain state for all pairs
+        const pairStates = {};
+        for (const [symbol, pairId] of Object.entries(PAIR_IDS)) {
+            try {
+                const pair = await registry.getPair(pairId);
+                pairStates[symbol] = {
+                    pairId,
+                    price: pair.price,
+                    maxDeviation: Number(pair.maxDeviation),
+                    active: pair.active,
+                    frozen: pair.frozen
+                };
+            } catch (e) {
+                console.error(`[Update] Failed to fetch pair ${symbol}: ${e.message}`);
+            }
+        }
+
         const pairIds = [];
         const prices = [];
 
-        for (const symbol of ORIGINAL_PAIRS) {
-            const price = await fetchPrice(symbol);
-            if (price) {
-                if (isSanePrice(symbol, price)) {
-                    pairIds.push(PAIR_IDS[symbol]);
-                    prices.push(price);
-                    lastKnownGoodPrices[symbol] = price;
-                } else {
-                    await alert(`${symbol} price sanity check failed — skipped this cycle`, 'WARNING');
+        for (const [symbol, state] of Object.entries(pairStates)) {
+            if (!state.active || state.frozen) {
+                console.log(`[Update] Skipping ${symbol} — inactive or frozen`);
+                continue;
+            }
+
+            const newPrice = await fetchPrice(symbol);
+            if (!newPrice) continue;
+
+            // Check maxDeviation from on-chain price
+            if (state.price > 0n) {
+                const diff = newPrice > state.price ? newPrice - state.price : state.price - newPrice;
+                const deviationBps = Number((diff * 10000n) / state.price);
+                if (deviationBps > state.maxDeviation) {
+                    console.error(`[Update] ${symbol}: deviation ${(deviationBps / 100).toFixed(2)}% exceeds max ${state.maxDeviation / 100}% — skipping`);
+                    await alert(`${symbol} price deviation too high — skipped`, 'WARNING');
+                    continue;
                 }
             }
-        }
 
-        if (pairIds.length > 0) {
-            await submitBatch(pairIds, prices);
-        } else {
-            isHealthy = false;
-            await alert('0 original pair prices fetched — nothing submitted', 'CRITICAL');
-            return;
-        }
-
-        // Submit new pairs individually to identify any failures
-        for (const symbol of NEW_PAIRS) {
-            const price = await fetchPrice(symbol);
-            if (!price) continue;
-            
-            if (!isSanePrice(symbol, price)) {
+            // Check our sanity limit (20% from last known good)
+            if (!isSanePrice(symbol, newPrice)) {
                 await alert(`${symbol} price sanity check failed — skipped`, 'WARNING');
                 continue;
             }
-            
-            const success = await submitBatch([PAIR_IDS[symbol]], [price]);
-            if (success) {
-                lastKnownGoodPrices[symbol] = price;
-            } else {
-                await alert(`Failed to submit ${symbol} — contract may reject this pair`, 'WARNING');
-            }
+
+            pairIds.push(state.pairId);
+            prices.push(newPrice);
+            lastKnownGoodPrices[symbol] = newPrice;
         }
 
+        if (pairIds.length === 0) {
+            isHealthy = false;
+            console.error('[Oracle] No valid prices to submit');
+            await alert('0 valid prices fetched — nothing submitted', 'CRITICAL');
+            return;
+        }
+
+        console.log(`[Oracle] Submitting ${pairIds.length} pairs in batch: [${pairIds.join(', ')}]`);
+        await submitBatch(pairIds, prices);
         lastRun = new Date().toISOString();
         isHealthy = true;
     } catch (err) {
