@@ -199,10 +199,12 @@ async function fetchPrice(symbol) {
 async function submitBatch(pairIds, prices, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
+            // Dynamic gas limit: 200k per pair + 100k base
+            const gasLimit = Math.min(3000000, 100000 + pairIds.length * 200000);
             const tx = await registry.submitPriceBatch(pairIds, prices, {
-                gasLimit: 500_000 // Cap gas to prevent runaway costs on bad RPC responses
+                gasLimit
             });
-            console.log(`[${new Date().toISOString()}] TX: ${tx.hash}`);
+            console.log(`[${new Date().toISOString()}] TX: ${tx.hash} (gas: ${gasLimit})`);
             const receipt = await tx.wait();
             console.log(`Confirmed in block ${receipt.blockNumber}`);
             lastTx = tx.hash;

@@ -228,10 +228,12 @@ async function submitCorrection(pairIds, prices, retries = 3) {
     submitting = true;
     for (let i = 0; i < retries; i++) {
         try {
+            // Dynamic gas limit: 200k per pair + 100k base
+            const gasLimit = Math.min(3000000, 100000 + pairIds.length * 200000);
             const tx = await registry.submitPriceBatch(pairIds, prices, {
-                gasLimit: 500_000 // Cap gas to prevent runaway costs on bad RPC responses
+                gasLimit
             });
-            console.log(`[Monitor] TX: ${tx.hash}`);
+            console.log(`[Monitor] TX: ${tx.hash} (gas: ${gasLimit})`);
             await tx.wait();
             lastCorrection = tx.hash;
             submitting = false;
