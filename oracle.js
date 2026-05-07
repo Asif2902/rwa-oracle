@@ -226,7 +226,7 @@ const NEW_PAIRS = ['MSFT', 'TSLA', 'NATGAS', 'NVDA', 'GBPUSD'];
 
 async function updatePrices() {
     try {
-        // Submit original 5 pairs first
+        // Submit original 5 pairs
         const pairIds = [];
         const prices = [];
 
@@ -277,28 +277,6 @@ async function updatePrices() {
         await alert(`Unhandled error in updatePrices: ${err.message}`, 'CRITICAL');
     }
 }
-            }
-        }
-
-        // Critical: alert and bail if zero prices were fetchable this cycle
-        if (pairIds.length === 0) {
-            isHealthy = false;
-            console.error('[Oracle] CRITICAL: No prices fetched this cycle — all sources failed');
-            await alert('0 prices fetched — all sources failed, nothing submitted', 'CRITICAL');
-            return;
-        }
-
-        await submitBatch(pairIds, prices);
-        lastRun = new Date().toISOString();
-        isHealthy = true;
-    } catch (err) {
-        console.error(`[Update] Error: ${err.message}`);
-        isHealthy = false;
-        await alert(`Unhandled error in updatePrices: ${err.message}`, 'CRITICAL');
-    }
-}
-
-// ─── Keep alive loop (prevents Railway from sleeping) ───────────────────────
 function keepAlive() {
     setInterval(() => {
         fetch(`http://localhost:${PORT}/health`).catch(() => {});
