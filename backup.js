@@ -43,13 +43,26 @@ server.listen(PORT, () => {
 const TG_TOKEN = process.env.TG_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
-async function alert(msg) {
+// Alert categories to reduce noise and prevent alert fatigue
+// CRITICAL: Immediate action required (TX failures, total failures)
+// WARNING: Attention needed but not immediate (sanity check failures)
+// CORRECTION: Price corrections (normal monitoring activity)
+// INFO: Normal operations (submissions, status changes)
+const ALERT_CATEGORIES = {
+    CRITICAL: { emoji: '🚨', label: 'CRITICAL' },
+    WARNING: { emoji: '⚠️', label: 'WARNING' },
+    CORRECTION: { emoji: '🔧', label: 'CORRECTION' },
+    INFO: { emoji: 'ℹ️', label: 'INFO' }
+};
+
+async function alert(msg, category = 'CRITICAL') {
     if (!TG_TOKEN || !TG_CHAT_ID) return;
     try {
+        const cat = ALERT_CATEGORIES[category] || ALERT_CATEGORIES.CRITICAL;
         await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `🚨 [AchRWA Backup] ${msg}` })
+            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `${cat.emoji} [AchRWA Backup] [${cat.label}] ${msg}` })
         });
     } catch (err) {
         console.error(`[Alert] Telegram failed: ${err.message}`);
@@ -73,7 +86,7 @@ const PRIVATE_KEY = process.env.BACKUP_KEY || process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 const ARCANSCAN_API = "https://testnet.arcscan.app/api/v2";
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, NVDA: 6, MSFT: 7, TSLA: 8, NATGAS: 9, GBPUSD: 10 };
 
 const PRICE_SOURCES = {
     AAPL: [
@@ -95,6 +108,26 @@ const PRICE_SOURCES = {
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
         { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ],
+    NVDA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NVDA" }
+    ],
+    MSFT: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/MSFT" }
+    ],
+    TSLA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/TSLA" }
+    ],
+    NATGAS: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NG=F" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NG=F" }
+    ],
+    GBPUSD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GBPUSD=X" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GBPUSD=X" }
     ]
 };
 
@@ -209,7 +242,7 @@ async function submitBatch(pairIds, prices, retries = 3) {
             const receipt = await tx.wait();
             console.log(`Confirmed in block ${receipt.blockNumber}`);
             lastTx = tx.hash;
-            await alert(`Backup submitted prices — TX: ${tx.hash}`);
+            await alert(`Backup submitted prices — TX: ${tx.hash}`, 'INFO');
             return true;
         } catch (err) {
             console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
@@ -221,7 +254,7 @@ async function submitBatch(pairIds, prices, retries = 3) {
             }
         }
     }
-    await alert(`BACKUP TX failed after ${retries} retries — prices may be stale`);
+    await alert(`BACKUP TX failed after ${retries} retries — prices may be stale`, 'CRITICAL');
     return false;
 }
 
@@ -235,7 +268,7 @@ async function monitor() {
                 console.log(`[Backup] PRIMARY DOWN - ACTIVATING`);
                 backupActive = true;
                 lastSubmitTime = 0; // Reset to submit immediately on first activation
-                await alert('PRIMARY ORACLE DOWN — backup is now ACTIVE');
+                await alert('PRIMARY ORACLE DOWN — backup is now ACTIVE', 'CRITICAL');
             }
 
             const now = Date.now();
@@ -253,7 +286,7 @@ async function monitor() {
                             prices.push(price);
                             lastKnownGoodPrices[symbol] = price; // Update last known good
                         } else {
-                            await alert(`⚠️ ${symbol} sanity check failed during backup submission — skipped`);
+                            await alert(`${symbol} sanity check failed during backup submission — skipped`, 'WARNING');
                         }
                     }
                 }
@@ -261,7 +294,7 @@ async function monitor() {
                     const success = await submitBatch(pairIds, prices);
                     if (success) lastSubmitTime = now;
                 } else {
-                    await alert('CRITICAL: Backup could not fetch any prices this cycle');
+                    await alert('Backup could not fetch any prices this cycle', 'CRITICAL');
                 }
             } else {
                 console.log(`[Backup] Waiting ${Math.ceil((BACKUP_SUBMIT_INTERVAL - timeSinceLastSubmit) / 1000)}s until next submit`);
@@ -271,7 +304,7 @@ async function monitor() {
                 console.log(`[Backup] PRIMARY BACK - STANDBY`);
                 backupActive = false;
                 lastSubmitTime = 0;
-                await alert('Primary oracle is back online — backup returning to STANDBY');
+                await alert('Primary oracle is back online — backup returning to STANDBY', 'INFO');
             }
         }
         lastCheck = new Date().toISOString();

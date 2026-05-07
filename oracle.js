@@ -35,13 +35,26 @@ server.listen(PORT, () => {
 const TG_TOKEN = process.env.TG_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
-async function alert(msg) {
+// Alert categories to reduce noise and prevent alert fatigue
+// CRITICAL: Immediate action required (TX failures, total failures)
+// WARNING: Attention needed but not immediate (sanity check failures)
+// CORRECTION: Price corrections (normal monitoring activity)
+// INFO: Normal operations (submissions, status changes)
+const ALERT_CATEGORIES = {
+    CRITICAL: { emoji: '🚨', label: 'CRITICAL' },
+    WARNING: { emoji: '⚠️', label: 'WARNING' },
+    CORRECTION: { emoji: '🔧', label: 'CORRECTION' },
+    INFO: { emoji: 'ℹ️', label: 'INFO' }
+};
+
+async function alert(msg, category = 'CRITICAL') {
     if (!TG_TOKEN || !TG_CHAT_ID) return;
     try {
+        const cat = ALERT_CATEGORIES[category] || ALERT_CATEGORIES.CRITICAL;
         await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `🚨 [AchRWA Oracle] ${msg}` })
+            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `${cat.emoji} [AchRWA Oracle] [${cat.label}] ${msg}` })
         });
     } catch (err) {
         console.error(`[Alert] Telegram failed: ${err.message}`);
@@ -59,7 +72,7 @@ const RPC_URLS = [
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, NVDA: 6, MSFT: 7, TSLA: 8, NATGAS: 9, GBPUSD: 10 };
 
 // ─── Price Sources (primary + backups) ──────────────────────────────────────
 const PRICE_SOURCES = {
@@ -84,6 +97,29 @@ const PRICE_SOURCES = {
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
         { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ],
+    NVDA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=NVDA" }
+    ],
+    MSFT: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=MSFT" }
+    ],
+    TSLA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "stockprices", url: "https://stockprices.dev/api/price?symbol=TSLA" }
+    ],
+    NATGAS: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NG=F" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NG=F" }
+    ],
+    GBPUSD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GBPUSD=X" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GBPUSD=X" }
     ]
 };
 
@@ -180,7 +216,7 @@ async function submitBatch(pairIds, prices, retries = 3) {
             }
         }
     }
-    await alert(`TX failed after ${retries} retries — oracle may be stale`);
+    await alert(`TX failed after ${retries} retries — oracle may be stale`, 'CRITICAL');
     return false;
 }
 
@@ -198,7 +234,7 @@ async function updatePrices() {
                     prices.push(price);
                     lastKnownGoodPrices[symbol] = price; // Update last known good
                 } else {
-                    await alert(`⚠️ ${symbol} price sanity check failed — skipped this cycle`);
+                    await alert(`${symbol} price sanity check failed — skipped this cycle`, 'WARNING');
                 }
             }
         }
@@ -207,7 +243,7 @@ async function updatePrices() {
         if (pairIds.length === 0) {
             isHealthy = false;
             console.error('[Oracle] CRITICAL: No prices fetched this cycle — all sources failed');
-            await alert('CRITICAL: 0 prices fetched — all sources failed, nothing submitted');
+            await alert('0 prices fetched — all sources failed, nothing submitted', 'CRITICAL');
             return;
         }
 
@@ -217,7 +253,7 @@ async function updatePrices() {
     } catch (err) {
         console.error(`[Update] Error: ${err.message}`);
         isHealthy = false;
-        await alert(`Unhandled error in updatePrices: ${err.message}`);
+        await alert(`Unhandled error in updatePrices: ${err.message}`, 'CRITICAL');
     }
 }
 

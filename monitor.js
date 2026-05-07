@@ -35,13 +35,26 @@ server.listen(PORT, () => {
 const TG_TOKEN = process.env.TG_TOKEN;
 const TG_CHAT_ID = process.env.TG_CHAT_ID;
 
-async function alert(msg) {
+// Alert categories to reduce noise and prevent alert fatigue
+// CRITICAL: Immediate action required (TX failures, total failures)
+// WARNING: Attention needed but not immediate (sanity check failures)
+// CORRECTION: Price corrections (normal monitoring activity)
+// INFO: Normal operations (submissions, status changes)
+const ALERT_CATEGORIES = {
+    CRITICAL: { emoji: '🚨', label: 'CRITICAL' },
+    WARNING: { emoji: '⚠️', label: 'WARNING' },
+    CORRECTION: { emoji: '🔧', label: 'CORRECTION' },
+    INFO: { emoji: 'ℹ️', label: 'INFO' }
+};
+
+async function alert(msg, category = 'CRITICAL') {
     if (!TG_TOKEN || !TG_CHAT_ID) return;
     try {
+        const cat = ALERT_CATEGORIES[category] || ALERT_CATEGORIES.CRITICAL;
         await fetch(`https://api.telegram.org/bot${TG_TOKEN}/sendMessage`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `🚨 [AchRWA Monitor] ${msg}` })
+            body: JSON.stringify({ chat_id: TG_CHAT_ID, text: `${cat.emoji} [AchRWA Monitor] [${cat.label}] ${msg}` })
         });
     } catch (err) {
         console.error(`[Alert] Telegram failed: ${err.message}`);
@@ -59,7 +72,7 @@ const RPC_URLS = [
 const MONITOR_KEY = process.env.MONITOR_KEY;
 const REGISTRY_ADDRESS = process.env.REGISTRY_ADDRESS;
 
-const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5 };
+const PAIR_IDS = { AAPL: 1, GOOGL: 2, WTI: 3, GOLD: 4, SILVER: 5, NVDA: 6, MSFT: 7, TSLA: 8, NATGAS: 9, GBPUSD: 10 };
 
 const PRICE_SOURCES = {
     AAPL: [
@@ -81,6 +94,26 @@ const PRICE_SOURCES = {
     SILVER: [
         { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/SI=F" },
         { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/SI=F" }
+    ],
+    NVDA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NVDA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NVDA" }
+    ],
+    MSFT: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/MSFT" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/MSFT" }
+    ],
+    TSLA: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/TSLA" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/TSLA" }
+    ],
+    NATGAS: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/NG=F" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/NG=F" }
+    ],
+    GBPUSD: [
+        { type: "yahoo", url: "https://query1.finance.yahoo.com/v8/finance/chart/GBPUSD=X" },
+        { type: "yahoo", url: "https://query2.finance.yahoo.com/v8/finance/chart/GBPUSD=X" }
     ]
 };
 
@@ -171,7 +204,7 @@ async function refreshPriceCache() {
                 priceCache[symbol] = { price, fetchedAt: Date.now() };
                 lastKnownGoodPrices[symbol] = price; // Update last known good on sane prices
             } else {
-                await alert(`⚠️ ${symbol} sanity check failed during cache refresh — keeping old cached value`);
+                await alert(`${symbol} sanity check failed during cache refresh — keeping old cached value`, 'WARNING');
             }
         }
         await new Promise(r => setTimeout(r, 200)); // 200ms between each symbol to avoid burst
@@ -202,7 +235,7 @@ async function submitCorrection(pairIds, prices, retries = 3) {
             await tx.wait();
             lastCorrection = tx.hash;
             submitting = false;
-            await alert(`Submitted ${pairIds.length} price correction(s) — TX: ${tx.hash}`);
+            await alert(`Submitted ${pairIds.length} price correction(s) — TX: ${tx.hash}`, 'CORRECTION');
             return true;
         } catch (err) {
             console.error(`[TX] Attempt ${i + 1} failed: ${err.message}`);
@@ -215,7 +248,7 @@ async function submitCorrection(pairIds, prices, retries = 3) {
         }
     }
     submitting = false;
-    await alert(`Correction TX failed after ${retries} retries`);
+    await alert(`Correction TX failed after ${retries} retries`, 'CRITICAL');
     return false;
 }
 
@@ -251,7 +284,7 @@ async function fastCheck() {
                             if (isSanePrice(symbol, freshPrice)) {
                                 mismatches.push({ pairId, symbol, apiPrice: freshPrice });
                             } else {
-                                await alert(`⚠️ ${symbol} correction skipped — sanity check failed on fresh price`);
+                                await alert(`${symbol} correction skipped — sanity check failed on fresh price`, 'WARNING');
                             }
                         } else {
                             console.log(`  ${symbol}: Fresh check OK (${(freshDevBps / 100).toFixed(4)}%), skipping`);
@@ -265,7 +298,7 @@ async function fastCheck() {
                         if (isSanePrice(symbol, freshPrice)) {
                             mismatches.push({ pairId, symbol, apiPrice: freshPrice });
                         } else {
-                            await alert(`⚠️ ${symbol} stale correction skipped — sanity check failed`);
+                            await alert(`${symbol} stale correction skipped — sanity check failed`, 'WARNING');
                         }
                     }
                 }
