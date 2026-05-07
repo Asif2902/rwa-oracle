@@ -221,21 +221,62 @@ async function submitBatch(pairIds, prices, retries = 3) {
 }
 
 // ─── Main update loop ───────────────────────────────────────────────────────
+const ORIGINAL_PAIRS = ['AAPL', 'GOOGL', 'WTI', 'GOLD', 'SILVER'];
+const NEW_PAIRS = ['MSFT', 'TSLA', 'NATGAS', 'NVDA', 'GBPUSD'];
+
 async function updatePrices() {
     try {
+        // Submit original 5 pairs first
         const pairIds = [];
         const prices = [];
 
-        for (const symbol of Object.keys(PAIR_IDS)) {
+        for (const symbol of ORIGINAL_PAIRS) {
             const price = await fetchPrice(symbol);
             if (price) {
                 if (isSanePrice(symbol, price)) {
                     pairIds.push(PAIR_IDS[symbol]);
                     prices.push(price);
-                    lastKnownGoodPrices[symbol] = price; // Update last known good
+                    lastKnownGoodPrices[symbol] = price;
                 } else {
                     await alert(`${symbol} price sanity check failed — skipped this cycle`, 'WARNING');
                 }
+            }
+        }
+
+        if (pairIds.length > 0) {
+            await submitBatch(pairIds, prices);
+        } else {
+            isHealthy = false;
+            await alert('0 original pair prices fetched — nothing submitted', 'CRITICAL');
+            return;
+        }
+
+        // Submit new pairs individually to identify any failures
+        for (const symbol of NEW_PAIRS) {
+            const price = await fetchPrice(symbol);
+            if (!price) continue;
+            
+            if (!isSanePrice(symbol, price)) {
+                await alert(`${symbol} price sanity check failed — skipped`, 'WARNING');
+                continue;
+            }
+            
+            const success = await submitBatch([PAIR_IDS[symbol]], [price]);
+            if (success) {
+                lastKnownGoodPrices[symbol] = price;
+            } else {
+                await alert(`Failed to submit ${symbol} — contract may reject this pair`, 'WARNING');
+            }
+        }
+
+        lastRun = new Date().toISOString();
+        isHealthy = true;
+    } catch (err) {
+        console.error(`[Update] Error: ${err.message}`);
+        isHealthy = false;
+        await alert(`Unhandled error in updatePrices: ${err.message}`, 'CRITICAL');
+    }
+}
             }
         }
 
