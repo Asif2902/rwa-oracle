@@ -2,9 +2,11 @@
 !oracle.js
 !monitor.js
 !backup.js
+!telegram-bot.js
 !ecosystem.config.cjs
 !SECURITY.md
 !.gitignore
 !.env.example
 .env
 !package.json
+!BOT_SETUP.md

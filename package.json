@@ -6,6 +6,7 @@
     "start": "node oracle.js",
     "monitor": "node monitor.js",
     "backup": "node backup.js",
+    "bot": "node telegram-bot.js",
     "pm2": "pm2 start ecosystem.config.cjs",
     "pm2:stop": "pm2 stop all",
     "pm2:restart": "pm2 restart all",
@@ -23,7 +24,10 @@
     "pm2:stop:backup": "pm2 stop backup",
     "pm2:restart:oracle": "pm2 restart oracle",
     "pm2:restart:monitor": "pm2 restart monitor",
-    "pm2:restart:backup": "pm2 restart backup"
+    "pm2:restart:backup": "pm2 restart backup",
+    "pm2:start:bot": "pm2 start telegram-bot.js --name bot",
+    "pm2:stop:bot": "pm2 stop bot",
+    "pm2:restart:bot": "pm2 restart bot"
   },
   "dependencies": {
     "dotenv": "^16.6.1",
