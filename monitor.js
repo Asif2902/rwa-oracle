@@ -90,6 +90,7 @@ const CHECK_INTERVAL = 5_000;         // On-chain deviation check every 5s
 const CACHE_MAX_AGE = 30_000;         // Cache entry considered stale after 30s
 const STALE_THRESHOLD = 300;          // On-chain price stale after 5 minutes
 const MAX_PRICE_CHANGE_BPS = 2000;    // 20% sanity guard
+const CORRECTION_THRESHOLD_BPS = 50;   // 0.5% - submit correction when difference exceeds this
 
 // ─── RPC ─────────────────────────────────────────────────────────────────────
 let currentRpcIndex = 0;
@@ -255,13 +256,13 @@ async function fastCheck() {
                 const deviationBps = Number((diff * 10000n) / onChainPrice);
                 const age = Math.floor(Date.now() / 1000) - lastUpdated;
 
-                if (deviationBps >= maxDeviation) {
+                if (deviationBps >= CORRECTION_THRESHOLD_BPS) {
                     console.log(`[!] ${symbol} DEVIATION: ${(deviationBps / 100).toFixed(2)}% | on-chain=${ethers.formatUnits(onChainPrice, 18)} cached=${ethers.formatUnits(cachedPrice, 18)}`);
                     const freshPrice = await fetchApiPrice(symbol);
                     if (freshPrice) {
                         const freshDiff = onChainPrice > freshPrice ? onChainPrice - freshPrice : freshPrice - onChainPrice;
                         const freshDevBps = Number((freshDiff * 10000n) / onChainPrice);
-                        if (freshDevBps >= maxDeviation) {
+                        if (freshDevBps >= CORRECTION_THRESHOLD_BPS) {
                             if (isSanePrice(symbol, freshPrice)) {
                                 mismatches.push({ pairId, symbol, apiPrice: freshPrice });
                             } else {
